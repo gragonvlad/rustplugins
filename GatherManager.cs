@@ -6,7 +6,7 @@ using UnityEngine;
 namespace Oxide.Plugins
 {
 
-    [Info("Gathering Manager", "Mughisi", "2.2.61", ResourceId = 675)]
+    [Info("Gathering Manager", "Mughisi", "2.2.7", ResourceId = 675)]
     class GatherManager : RustPlugin
     {
 
@@ -31,13 +31,20 @@ namespace Oxide.Plugins
         private static readonly Dictionary<string, object> DefaultPickupResourceModifiers = new Dictionary<string, object>();
         private static readonly Dictionary<string, object> DefaultSurveyResourceModifiers = new Dictionary<string, object>();
         private const float DefaultMiningQuarryResourceTickRate = 5f;
+        private const float DefaultExcavatorResourceTickRate = 3f;
+        private const float DefaultExcavatorTimeForFullResources = 120f;
+        private const float DefaultExcavatorBeltSpeedMax = 0.1f;
 
         public Dictionary<string, float> GatherResourceModifiers { get; private set; }
         public Dictionary<string, float> GatherDispenserModifiers { get; private set; }
         public Dictionary<string, float> QuarryResourceModifiers { get; private set; }
+        public Dictionary<string, float> ExcavatorResourceModifiers { get; private set; }
         public Dictionary<string, float> PickupResourceModifiers { get; private set; }
         public Dictionary<string, float> SurveyResourceModifiers { get; private set; }
         public float MiningQuarryResourceTickRate { get; private set; }
+        public float ExcavatorResourceTickRate { get; private set; }
+        public float ExcavatorTimeForFullResources { get; private set; }
+        public float ExcavatorBeltSpeedMax { get; private set; }
 
         // Plugin messages
         private const string DefaultNotAllowed = "You don't have permission to use this command.";
@@ -68,6 +75,7 @@ namespace Oxide.Plugins
         private const string DefaultDispensers = "Resource Dispensers";
         private const string DefaultCharges = "Survey Charges";
         private const string DefaultQuarries = "Mining Quarries";
+        private const string DefaultExcavators = "Excavators";
         private const string DefaultPickups = "pickups";
 
         public string NotAllowed { get; private set; }
@@ -91,6 +99,7 @@ namespace Oxide.Plugins
         public string Dispensers { get; private set; }
         public string Charges { get; private set; }
         public string Quarries { get; private set; }
+        public string Excavators { get; private set; }
         public string Pickups { get; private set; }
 
         #endregion
@@ -113,6 +122,47 @@ namespace Oxide.Plugins
             validDispensers.Add("ore", ResourceDispenser.GatherType.Ore);
             validDispensers.Add("corpse", ResourceDispenser.GatherType.Flesh);
             validDispensers.Add("flesh", ResourceDispenser.GatherType.Flesh);
+
+            foreach (var excavator in UnityEngine.Object.FindObjectsOfType<ExcavatorArm>())
+            {
+                if (ExcavatorResourceTickRate != DefaultMiningQuarryResourceTickRate)
+                {
+                    excavator.CancelInvoke("ProcessResources");
+                    excavator.InvokeRepeating("ProcessResources", ExcavatorResourceTickRate, ExcavatorResourceTickRate);
+                }
+
+                if (ExcavatorBeltSpeedMax != DefaultExcavatorBeltSpeedMax)
+                {
+                    excavator.beltSpeedMax = ExcavatorBeltSpeedMax;
+                }
+
+                if (ExcavatorTimeForFullResources != DefaultExcavatorTimeForFullResources)
+                {
+                    excavator.timeForFullResources = ExcavatorTimeForFullResources;
+                }
+            }
+        }
+
+        private void Unload()
+        {
+            foreach (var excavator in UnityEngine.Object.FindObjectsOfType<ExcavatorArm>())
+            {
+                if (ExcavatorResourceTickRate != DefaultMiningQuarryResourceTickRate)
+                {
+                    excavator.CancelInvoke("ProcessResources");
+                    excavator.InvokeRepeating("ProcessResources", DefaultMiningQuarryResourceTickRate, DefaultMiningQuarryResourceTickRate);
+                }
+
+                if (ExcavatorBeltSpeedMax != DefaultExcavatorBeltSpeedMax)
+                {
+                    excavator.beltSpeedMax = DefaultExcavatorBeltSpeedMax;
+                }
+
+                if (ExcavatorTimeForFullResources != DefaultExcavatorTimeForFullResources)
+                {
+                    excavator.timeForFullResources = DefaultExcavatorTimeForFullResources;
+                }
+            }
         }
 
         protected override void LoadDefaultConfig() => PrintWarning("New configuration file created.");
@@ -142,6 +192,12 @@ namespace Oxide.Plugins
                     var quarries = string.Format(HelpTextPlayerGains, Quarries);
                     quarries = QuarryResourceModifiers.Aggregate(quarries, (current, entry) => current + ("\r\n    " + entry.Key + ": x" + entry.Value));
                     help += "\r\n" + quarries;
+                }
+                if (ExcavatorResourceModifiers.Count > 0)
+                {
+                    var excavators = string.Format(HelpTextPlayerGains, Excavators);
+                    excavators = ExcavatorResourceModifiers.Aggregate(excavators, (current, entry) => current + ("\r\n    " + entry.Key + ": x" + entry.Value));
+                    help += "\r\n" + excavators;
                 }
                 if (SurveyResourceModifiers.Count > 0)
                 {
@@ -249,6 +305,23 @@ namespace Oxide.Plugins
                         arg.ReplyWith(string.Format(ModifyResource, resource, modifier, Quarries));
                     }
                     SetConfigValue("Options", "QuarryResourceModifiers", QuarryResourceModifiers);
+                    break;
+                case "excavator":
+                    if (remove)
+                    {
+                        if (ExcavatorResourceModifiers.ContainsKey(resource))
+                            ExcavatorResourceModifiers.Remove(resource);
+                        arg.ReplyWith(string.Format(ModifyResourceRemove, resource, Excavators));
+                    }
+                    else
+                    {
+                        if (ExcavatorResourceModifiers.ContainsKey(resource))
+                            ExcavatorResourceModifiers[resource] = modifier;
+                        else
+                            ExcavatorResourceModifiers.Add(resource, modifier);
+                        arg.ReplyWith(string.Format(ModifyResource, resource, modifier, Excavators));
+                    }
+                    SetConfigValue("Options", "ExcavatorResourceModifiers", ExcavatorResourceModifiers);
                     break;
                 case "survey":
                     if (remove)
@@ -365,6 +438,39 @@ namespace Oxide.Plugins
             }
         }
 
+        [ConsoleCommand("excavator.tickrate")]
+        private void ExcavatorTickRate(ConsoleSystem.Arg arg)
+        {
+            if (arg.Player() != null && !arg.Player().IsAdmin)
+            {
+                arg.ReplyWith(NotAllowed);
+                return;
+            }
+
+            if (!arg.HasArgs())
+            {
+                arg.ReplyWith(InvalidArgumentsSpeed);
+                return;
+            }
+
+            var modifier = arg.GetFloat(0, -1);
+            if (modifier < 1)
+            {
+                arg.ReplyWith(InvalidSpeed);
+                return;
+            }
+
+            ExcavatorResourceTickRate = modifier;
+            SetConfigValue("Options", "ExcavatorResourceTickRate", ExcavatorResourceTickRate);
+            arg.ReplyWith(string.Format(ModifySpeed, modifier));
+            var excavators = UnityEngine.Object.FindObjectsOfType<MiningQuarry>();
+            foreach (var excavator in excavators.Where(excavator => excavator.IsOn()))
+            {
+                excavator.CancelInvoke("ProcessResources");
+                excavator.InvokeRepeating("ProcessResources", ExcavatorResourceTickRate, ExcavatorResourceTickRate);
+            }
+        }
+
         private void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
             if (!entity.ToPlayer())
@@ -435,6 +541,19 @@ namespace Oxide.Plugins
             }
         }
 
+        private void OnExcavatorGather(ExcavatorArm excavator, Item item)
+        {
+            float modifier;
+            if (ExcavatorResourceModifiers.TryGetValue(item.info.displayName.english, out modifier))
+            {
+                item.amount = (int)(item.amount * modifier);
+            }
+            else if (ExcavatorResourceModifiers.TryGetValue("*", out modifier))
+            {
+                item.amount = (int)(item.amount * modifier);
+            }
+        }
+
         private void OnCollectiblePickup(Item item, BasePlayer player)
         {
             float modifier;
@@ -478,9 +597,15 @@ namespace Oxide.Plugins
             var gatherResourceModifiers = GetConfigValue("Options", "GatherResourceModifiers", DefaultGatherResourceModifiers);
             var gatherDispenserModifiers = GetConfigValue("Options", "GatherDispenserModifiers", DefaultGatherDispenserModifiers);
             var quarryResourceModifiers = GetConfigValue("Options", "QuarryResourceModifiers", DefaultQuarryResourceModifiers);
+            var excavatorResourceModifiers = GetConfigValue("Options", "ExcavatorResourceModifiers", quarryResourceModifiers);
             var pickupResourceModifiers = GetConfigValue("Options", "PickupResourceModifiers", DefaultPickupResourceModifiers);
             var surveyResourceModifiers = GetConfigValue("Options", "SurveyResourceModifiers", DefaultSurveyResourceModifiers);
+
             MiningQuarryResourceTickRate = GetConfigValue("Options", "MiningQuarryResourceTickRate", DefaultMiningQuarryResourceTickRate);
+
+            ExcavatorResourceTickRate = GetConfigValue("Options", "ExcavatorResourceTickRate", DefaultExcavatorResourceTickRate);
+            ExcavatorBeltSpeedMax = GetConfigValue("Options", "ExcavatorBeltSpeedMax", DefaultExcavatorBeltSpeedMax);
+            ExcavatorTimeForFullResources = GetConfigValue("Options", "ExcavatorTimeForFullResources", DefaultExcavatorTimeForFullResources);
 
             GatherResourceModifiers = new Dictionary<string, float>();
             foreach (var entry in gatherResourceModifiers)
@@ -504,6 +629,14 @@ namespace Oxide.Plugins
                 float rate;
                 if (!float.TryParse(entry.Value.ToString(), out rate)) continue;
                 QuarryResourceModifiers.Add(entry.Key, rate);
+            }
+
+            ExcavatorResourceModifiers = new Dictionary<string, float>();
+            foreach (var entry in excavatorResourceModifiers)
+            {
+                float rate;
+                if (!float.TryParse(entry.Value.ToString(), out rate)) continue;
+                ExcavatorResourceModifiers.Add(entry.Key, rate);
             }
 
             PickupResourceModifiers = new Dictionary<string, float>();
@@ -543,6 +676,7 @@ namespace Oxide.Plugins
             HelpTextPlayerMiningQuarrySpeed = GetConfigValue("Messages", "HelpTextMiningQuarrySpeed", DefaultHelpTextPlayerMiningQuarrySpeed);
             Dispensers = GetConfigValue("Messages", "Dispensers", DefaultDispensers);
             Quarries = GetConfigValue("Messages", "MiningQuarries", DefaultQuarries);
+            Excavators = GetConfigValue("Messages", "Excavators", DefaultExcavators);
             Charges = GetConfigValue("Messages", "SurveyCharges", DefaultCharges);
             Pickups = GetConfigValue("Messages", "Pickups", DefaultPickups);
 
